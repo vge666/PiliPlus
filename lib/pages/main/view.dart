@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:PiliPlus/common/style.dart';
 import 'package:PiliPlus/common/widgets/floating_navigation_bar.dart';
+import 'package:PiliPlus/common/widgets/liquid_glass.dart';
 import 'package:PiliPlus/common/widgets/flutter/pop_scope.dart';
 import 'package:PiliPlus/common/widgets/image/network_img_layer.dart';
 import 'package:PiliPlus/common/widgets/main_layout.dart';
@@ -148,6 +149,12 @@ class _MainAppState extends PopScopeState<MainApp>
     }
   }
 
+  Animation<double>? get _shellSelection {
+    if (!_mainController.mainTabBarView) return null;
+    final controller = _mainController.controller;
+    return controller is TabController ? controller.animation : null;
+  }
+
   Widget? get _bottomNav {
     Widget? bottomNav;
     if (_mainController.navigationBars.length > 1) {
@@ -156,6 +163,7 @@ class _MainAppState extends PopScopeState<MainApp>
           () => FloatingNavigationBar(
             onDestinationSelected: _mainController.setIndex,
             selectedIndex: _mainController.selectedIndex.value,
+            selectionAnimation: _shellSelection,
             destinations: _mainController.navigationBars
                 .map(
                   (e) => FloatingNavigationDestination(
@@ -207,26 +215,36 @@ class _MainAppState extends PopScopeState<MainApp>
       }
 
       if (_mainController.hideBottomBar) {
+        final Widget bar = bottomNav!;
         if (_mainController.barOffset case final barOffset?) {
-          return Obx(
-            () => FractionalTranslation(
-              translation: Offset(
-                0.0,
-                barOffset.value / Style.topBarHeight,
-              ),
-              child: bottomNav,
-            ),
-          );
+          return Obx(() {
+            final revealed =
+                1 - (barOffset.value / Style.topBarHeight).clamp(0.0, 1.0);
+            return FractionalTranslation(
+              translation: Offset(0.0, barOffset.value / Style.topBarHeight),
+              child: _mainController.floatingNavBar
+                  ? Opacity(opacity: revealed, child: bar)
+                  : bar,
+            );
+          });
         }
         if (_mainController.showBottomBar case final showBottomBar?) {
-          return Obx(
-            () => AnimatedSlide(
-              curve: Curves.easeInOutCubicEmphasized,
-              duration: const Duration(milliseconds: 500),
-              offset: Offset(0, showBottomBar.value ? 0 : 1),
-              child: bottomNav,
-            ),
-          );
+          return Obx(() {
+            final shown = showBottomBar.value;
+            return AnimatedSlide(
+              curve: LiquidGlassMotion.curve,
+              duration: LiquidGlassMotion.duration,
+              offset: Offset(0, shown ? 0 : 1),
+              child: _mainController.floatingNavBar
+                  ? AnimatedOpacity(
+                      curve: LiquidGlassMotion.curve,
+                      duration: LiquidGlassMotion.duration,
+                      opacity: shown ? 1 : 0,
+                      child: bar,
+                    )
+                  : bar,
+            );
+          });
         }
       }
     }
@@ -274,10 +292,7 @@ class _MainAppState extends PopScopeState<MainApp>
                                 )
                               : Text(e.label),
                           icon: _buildIcon(type: e),
-                          selectedIcon: _buildIcon(
-                            type: e,
-                            selected: true,
-                          ),
+                          selectedIcon: _buildIcon(type: e, selected: true),
                         ),
                       )
                       .toList(),
@@ -330,6 +345,13 @@ class _MainAppState extends PopScopeState<MainApp>
         physics: const NeverScrollableScrollPhysics(),
         children: _mainController.navigationBars.map((i) => i.page).toList(),
       );
+    }
+
+    final shellSelection = _shellSelection;
+    if (_mainController.floatingNavBar &&
+        _mainController.useBottomNav &&
+        shellSelection != null) {
+      child = LiquidGlassTransition(animation: shellSelection, child: child);
     }
 
     Widget? sideBar;
@@ -387,19 +409,17 @@ class _MainAppState extends PopScopeState<MainApp>
   Widget _buildIcon({required NavigationBarType type, bool selected = false}) {
     final icon = selected ? type.selectIcon : type.icon;
     return type == .dynamics
-        ? Obx(
-            () {
-              final dynCount = _mainController.dynCount.value;
-              return Badge(
-                isLabelVisible: dynCount > 0,
-                label: _mainController.dynamicBadgeMode == .number
-                    ? Text(dynCount.toString())
-                    : null,
-                padding: const .symmetric(horizontal: 6),
-                child: icon,
-              );
-            },
-          )
+        ? Obx(() {
+            final dynCount = _mainController.dynCount.value;
+            return Badge(
+              isLabelVisible: dynCount > 0,
+              label: _mainController.dynamicBadgeMode == .number
+                  ? Text(dynCount.toString())
+                  : null,
+              padding: const .symmetric(horizontal: 6),
+              child: icon,
+            );
+          })
         : icon;
   }
 
@@ -411,10 +431,7 @@ class _MainAppState extends PopScopeState<MainApp>
         msgBadge(_mainController),
         IconButton(
           tooltip: '搜索',
-          icon: const Icon(
-            Icons.search_outlined,
-            semanticLabel: '搜索',
-          ),
+          icon: const Icon(Icons.search_outlined, semanticLabel: '搜索'),
           onPressed: () => Get.toNamed('/search'),
         ),
       ],
