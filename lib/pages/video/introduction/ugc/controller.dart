@@ -41,6 +41,7 @@ import 'package:PiliPlus/utils/platform_utils.dart';
 import 'package:PiliPlus/utils/request_utils.dart';
 import 'package:PiliPlus/utils/share_utils.dart';
 import 'package:PiliPlus/utils/storage_pref.dart';
+import 'package:PiliPlus/utils/subtitle_summary.dart';
 import 'package:PiliPlus/utils/utils.dart';
 import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
@@ -789,17 +790,25 @@ class UgcIntroController extends CommonIntroController with ReloadMixin {
       return null;
     }
     SmartDialog.showLoading(msg: '正在获取AI总结');
-    final res = await VideoHttp.aiConclusion(
-      bvid: bvid,
-      cid: cid,
-      upMid: mid,
-    );
-    SmartDialog.dismiss();
-    if (res case Success(:final response)) {
-      return response.modelResult;
-    } else if (res is Error && res.code == 1) {
-      SmartDialog.showToast("AI处理中，请稍后再试");
-    } else {
+    try {
+      final res = await VideoHttp.aiConclusion(
+        bvid: bvid,
+        cid: cid,
+        upMid: mid,
+      );
+      var result = res.dataOrNull?.modelResult;
+      if (!SubtitleSummary.hasText(result)) {
+        result = await VideoHttp.subtitleConclusion(bvid: bvid, cid: cid);
+      }
+      SmartDialog.dismiss();
+      if (SubtitleSummary.hasText(result)) return result;
+      if (res is Error && res.code == 1) {
+        SmartDialog.showToast("AI处理中，请稍后再试");
+      } else {
+        SmartDialog.showToast("当前视频暂不支持AI视频总结");
+      }
+    } catch (_) {
+      SmartDialog.dismiss();
       SmartDialog.showToast("当前视频暂不支持AI视频总结");
     }
     return null;
