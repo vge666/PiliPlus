@@ -80,25 +80,6 @@ class FloatingNavigationBar extends StatelessWidget {
     final motionDuration = reduceMotion ? Duration.zero : animationDuration;
     final effectiveElevation =
         elevation ?? navigationBarTheme.elevation ?? defaults.elevation!;
-    final resolvedIndicator =
-        indicatorColor ??
-        navigationBarTheme.indicatorColor ??
-        defaults.indicatorColor;
-    final baseColor =
-        backgroundColor ??
-        navigationBarTheme.backgroundColor ??
-        defaults.backgroundColor!;
-    final tint =
-        surfaceTintColor ??
-        navigationBarTheme.surfaceTintColor ??
-        defaults.surfaceTintColor;
-    final glassColor = tint == null || tint.a == 0 || effectiveElevation <= 0
-        ? baseColor
-        : ElevationOverlay.applySurfaceTint(
-            baseColor,
-            tint,
-            effectiveElevation,
-          );
 
     return SizedBox(
       width: double.infinity,
@@ -123,14 +104,14 @@ class FloatingNavigationBar extends StatelessWidget {
                 height: _kNavigationHeight,
                 child: LiquidGlass(
                   borderRadius: _kBorderRadius,
-                  color: glassColor,
+                  thickness: 1.2,
+                  distort: 20,
                   elevation: effectiveElevation,
                   shadowColor: shadowColor ?? navigationBarTheme.shadowColor,
                   child: _FloatingNavStack(
                     selectedIndex: selectedIndex,
                     selectionAnimation: selectionAnimation,
                     duration: motionDuration,
-                    indicatorColor: resolvedIndicator,
                     children: [
                       for (int i = 0; i < destinations.length; i++)
                         Expanded(
@@ -263,7 +244,11 @@ class FloatingNavigationDestination extends StatelessWidget {
               maxLines: 1,
               overflow: .ellipsis,
               textAlign: .center,
-              style: textStyle,
+              style: textStyle?.copyWith(
+                shadows: Theme.of(context).brightness == Brightness.dark
+                    ? const [Shadow(color: Color(0xD9000000), blurRadius: 5)]
+                    : const [Shadow(color: Color(0xF5FFFFFF), blurRadius: 6)],
+              ),
             ),
           ),
         );
@@ -387,14 +372,12 @@ class _FloatingNavStack extends StatefulWidget {
     required this.selectedIndex,
     required this.selectionAnimation,
     required this.duration,
-    required this.indicatorColor,
     required this.children,
   });
 
   final int selectedIndex;
   final Animation<double>? selectionAnimation;
   final Duration duration;
-  final Color? indicatorColor;
   final List<Widget> children;
 
   @override
@@ -477,8 +460,9 @@ class _FloatingNavStackState extends State<_FloatingNavStack>
                           padding: const .all(_kIndicatorInset),
                           child: LiquidGlass(
                             borderRadius: _kIndicatorBorderRadius,
-                            color: widget.indicatorColor,
-                            blurSigma: 0,
+                            thickness: 2.4,
+                            distort: 34,
+                            bead: true,
                             child: const SizedBox.expand(),
                           ),
                         ),
