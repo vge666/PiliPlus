@@ -30,8 +30,11 @@ abstract final class Api {
   static const String tvPlayUrl = '/x/tv/playurl';
 
   // 字幕
-  // aid, cid
+  // aid, cid。wbi/v2 在未登录或风控时 subtitles 可能是空数组，不代表没有字幕。
   static const String playInfo = '/x/player/wbi/v2';
+  static const String playerV2 = '/x/player/v2';
+  static const String dmView = '/x/v2/dm/view';
+  static const String subtitleWebView = '/x/v2/subtitle/web/view';
 
   // 视频详情
   // 竖屏 https://api.bilibili.com/x/web-interface/view?aid=527403921

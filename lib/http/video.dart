@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:PiliPlus/common/constants.dart';
 import 'package:PiliPlus/grpc/bilibili/main/community/reply/v1.pb.dart'
     show ReplyInfo;
+import 'package:PiliPlus/grpc/dm.dart';
 import 'package:PiliPlus/http/api.dart';
 import 'package:PiliPlus/http/browser_ua.dart';
 import 'package:PiliPlus/http/constants.dart';
@@ -22,9 +23,11 @@ import 'package:PiliPlus/models_new/popular/popular_series_one/data.dart';
 import 'package:PiliPlus/models_new/triple/pgc_triple.dart';
 import 'package:PiliPlus/models_new/triple/ugc_triple.dart';
 import 'package:PiliPlus/models_new/video/video_ai_conclusion/data.dart';
+import 'package:PiliPlus/models_new/video/video_ai_conclusion/model_result.dart';
 import 'package:PiliPlus/models_new/video/video_detail/data.dart';
 import 'package:PiliPlus/models_new/video/video_note_list/data.dart';
 import 'package:PiliPlus/models_new/video/video_play_info/data.dart';
+import 'package:PiliPlus/models_new/video/video_play_info/subtitle.dart';
 import 'package:PiliPlus/models_new/video/video_relation/data.dart';
 import 'package:PiliPlus/models_new/video/video_shot/data.dart';
 import 'package:PiliPlus/utils/accounts.dart';
@@ -36,6 +39,7 @@ import 'package:PiliPlus/utils/recommend_filter.dart';
 import 'package:PiliPlus/utils/request_utils.dart';
 import 'package:PiliPlus/utils/storage.dart';
 import 'package:PiliPlus/utils/storage_pref.dart';
+import 'package:PiliPlus/utils/subtitle_summary.dart';
 import 'package:PiliPlus/utils/subtitle_utils.dart';
 import 'package:PiliPlus/utils/utils.dart';
 import 'package:PiliPlus/utils/wbi_sign.dart';
@@ -888,15 +892,207 @@ abstract final class VideoHttp {
     });
     final res = await Request().get(Api.aiConclusion, queryParameters: params);
     final int? code = res.data['code'];
-    if (code == 0) {
-      final int? dataCode = res.data['data']?['code'];
+    if (code == 0 && res.data['data'] is Map) {
+      final data = Map<String, dynamic>.from(res.data['data'] as Map);
+      final dataCode = data['code'] is int
+          ? data['code'] as int
+          : int.tryParse('${data['code']}');
       if (dataCode == 0) {
-        return Success(AiConclusionData.fromJson(res.data['data']));
-      } else {
-        return Error(null, code: dataCode);
+        try {
+          final parsed = AiConclusionData.fromJson(data);
+          if (SubtitleSummary.hasText(parsed.modelResult)) {
+            return Success(parsed);
+          }
+        } catch (_) {}
       }
+      // 总结正文为空时，结论接口仍可能带上字幕分段。
+      final built = SubtitleSummary.toResult(
+        SubtitleSummary.cuesFromConclusion(data['model_result']),
+      );
+      if (built != null) return Success(AiConclusionData(modelResult: built));
+      return Error(null, code: dataCode);
     } else {
       return Error(res.data['message']);
+    }
+  }
+
+  /// CC / AI 列表为空时，再从播放器实际使用的字幕源把正文抓回来。
+  static Future<AiConclusionResult?> subtitleConclusion({
+    required String bvid,
+    required int cid,
+  }) async {
+    try {
+      final aid = IdUtils.bv2av(bvid);
+      final primary = <Subtitle>[];
+      final legacy = <Subtitle>[];
+
+      await _addSubtitles(primary, aid, cid, () async {
+        final res = await playInfo(bvid: bvid, cid: cid);
+        return res.dataOrNull?.subtitle?.subtitles;
+      });
+      await _addSubtitles(
+        primary,
+        aid,
+        cid,
+        () => _dmGrpcSubtitles(aid, cid),
+      );
+      await _addSubtitles(primary, aid, cid, () async {
+        final res = await Request().get(
+          Api.dmView,
+          queryParameters: {'aid': aid, 'oid': cid, 'type': 1},
+        );
+        return _subtitlesOf(res.data);
+      });
+      await _addSubtitles(
+        primary,
+        aid,
+        cid,
+        () => _webViewSubtitles(aid, cid),
+      );
+
+      primary.sort();
+      final fromPrimary = await _firstConclusion(primary);
+      if (fromPrimary != null) return fromPrimary;
+
+      // 未签名的 player/v2 可能串片，只在前面的源没有正文时再用。
+      await _addSubtitles(legacy, aid, cid, () async {
+        final res = await Request().get(
+          Api.playerV2,
+          queryParameters: {'aid': aid, 'bvid': bvid, 'cid': cid},
+        );
+        return _subtitlesOf(res.data);
+      }, skip: primary);
+      legacy.sort();
+      return _firstConclusion(legacy);
+    } catch (_) {}
+    return null;
+  }
+
+  static Future<AiConclusionResult?> _firstConclusion(List<Subtitle> subs) async {
+    for (final sub in subs) {
+      final url = sub.subtitleUrl;
+      if (url == null || url.isEmpty) continue;
+      final result = SubtitleSummary.toResult(await _cuesFromUrl(url));
+      if (result != null) return result;
+    }
+    return null;
+  }
+
+  static Future<void> _addSubtitles(
+    List<Subtitle> into,
+    int aid,
+    int cid,
+    Future<List<Subtitle>?> Function() load, {
+    List<Subtitle>? skip,
+  }) async {
+    try {
+      final list = await load();
+      if (list == null) return;
+      for (final sub in list) {
+        final url = sub.subtitleUrl?.http2https;
+        if (url == null || url.isEmpty) continue;
+        if (!SubtitleSummary.urlBelongs(url, aid, cid)) continue;
+        sub.subtitleUrl = url;
+        if (into.any((e) => e.subtitleUrl == url)) continue;
+        if (skip?.any((e) => e.subtitleUrl == url) ?? false) continue;
+        into.add(sub);
+      }
+    } catch (_) {}
+  }
+
+  static Future<List<Subtitle>?> _dmGrpcSubtitles(int aid, int cid) async {
+    final res = await DmGrpc.dmView(aid, cid);
+    if (res case Success(:final response)) {
+      return DmGrpc.dmViewToSubtitle(response);
+    }
+    return null;
+  }
+
+  static Future<List<Subtitle>?> _webViewSubtitles(int aid, int cid) async {
+    // 这个接口经常是 protobuf，按 JSON 解析会把正文丢掉。
+    final res = await Request.dio.get<String>(
+      Api.subtitleWebView,
+      queryParameters: {
+        'oid': cid,
+        'pid': aid,
+        'type': 1,
+        'context_ext': '{"video_type":1}',
+        'cur_production_type': 0,
+        'playlist_switch': 0,
+      },
+      options: Options(responseType: .plain),
+    );
+    final text = res.data;
+    if (text == null || text.isEmpty) return null;
+    try {
+      final parsed = _subtitlesOf(jsonDecode(text));
+      if (parsed != null && parsed.isNotEmpty) return parsed;
+    } catch (_) {}
+    final urls = SubtitleSummary.urlsIn(text);
+    if (urls.isEmpty) return null;
+    return [
+      for (final url in urls)
+        Subtitle(
+          id: null,
+          lan: url.contains('ai_subtitle') || url.contains('aisubtitle')
+              ? 'ai-zh'
+              : 'und',
+          subtitleUrl: url,
+          isAi: url.contains('ai_subtitle') || url.contains('aisubtitle'),
+        ),
+    ];
+  }
+
+  static List<Subtitle>? _subtitlesOf(Object? data) {
+    if (data is String) return null;
+    if (data is! Map) return null;
+    if (data['code'] != null && data['code'] != 0) return null;
+    final inner = data['data'];
+    final subtitle = inner is Map ? inner['subtitle'] : data['subtitle'];
+    final list = switch (subtitle) {
+      {'subtitles': final List list} => list,
+      {'subtitle_list': final List list} => list,
+      final List list => list,
+      _ => null,
+    };
+    if (list == null || list.isEmpty) return null;
+    final subs = <Subtitle>[];
+    for (final item in list) {
+      if (item is! Map) continue;
+      final lan = (item['lan'] ?? item['language'])?.toString();
+      if (lan == null || lan.isEmpty) continue;
+      final type = item['type'];
+      final typeInt = type is int ? type : int.tryParse('$type');
+      final id = item['id'];
+      subs.add(
+        Subtitle(
+          id: id is int ? id : int.tryParse('$id'),
+          lan: lan,
+          lanDoc: item['lan_doc']?.toString(),
+          subtitleUrl: (item['subtitle_url'] ?? item['subtitleUrl'])
+              ?.toString(),
+          type: typeInt,
+          isAi: typeInt == 1 || lan.startsWith('ai'),
+        ),
+      );
+    }
+    return subs;
+  }
+
+  static Future<List<SubtitleCue>> _cuesFromUrl(String url) async {
+    try {
+      final res = await Request().get(url.http2https);
+      final data = res.data;
+      if (data is String) {
+        try {
+          return SubtitleSummary.cuesFromBody(jsonDecode(data));
+        } catch (_) {
+          return const [];
+        }
+      }
+      return SubtitleSummary.cuesFromBody(data);
+    } catch (_) {
+      return const [];
     }
   }
 
